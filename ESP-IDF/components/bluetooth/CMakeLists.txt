@@ -1,0 +1,15 @@
+idf_component_register(
+    SRCS
+        "ble_init.c"
+        "gatt_server.c"
+        "ble_notify.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        session
+        dsp
+        esp_log
+        freertos
+        bt
+        nvs_flash
+)
