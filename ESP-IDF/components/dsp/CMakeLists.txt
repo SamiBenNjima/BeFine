@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "iir_filter.c"
+        "flow_calculator.c"
+        "peak_detector.c"
+        "dsp.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        sensors
+        esp_log
+        nvs_flash
+        freertos
+)
