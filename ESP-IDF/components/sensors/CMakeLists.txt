@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "sdp3x.c"
+        "sht4x.c"
+        "mpu6050.c"
+        "sensors.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        driver
+        esp_log
+        freertos
+)
