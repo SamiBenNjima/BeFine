@@ -1,0 +1,32 @@
+name: befine
+repository: https://github.com/SamiBenNjima/befine
+
+packages:
+  - packages/**
+  - apps/**
+
+command:
+  bootstrap:
+    usePubspecOverrides: true
+
+scripts:
+  analyze:
+    run: melos exec -- flutter analyze --fatal-infos
+    description: Analyze all packages
+
+  test:
+    run: melos exec --dir-exists=test -- flutter test --coverage
+    description: Run tests for all packages
+
+  format:
+    run: melos exec -- dart format lib test --set-exit-if-changed
+    description: Check formatting
+
+  clean:
+    run: melos exec -- flutter clean
+    description: Clean all packages
+
+  build:android:
+    run: |
+      cd apps/befine_app && flutter build apk --release
+    description: Build Android APK
