@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "spiffs_storage.c"
+        "sd_storage.c"
+        "session_record.c"
+        "storage.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        dsp
+        esp_log
+        freertos
+        nvs_flash
+        spiffs
+        fatfs
+        driver
+)
