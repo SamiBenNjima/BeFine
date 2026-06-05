@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "befine_main.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        sensors
+        dsp
+        session
+        bluetooth
+        display
+        storage
+        power_mgmt
+        nvs_flash
+        esp_event
+        freertos
+)
