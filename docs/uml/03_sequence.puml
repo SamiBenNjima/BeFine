@@ -1,0 +1,139 @@
+@startuml 03_sequence
+title BeFine — Diagramme de Séquence\nScénario principal : Session guidée complète
+
+skinparam sequence {
+  ArrowColor      #3B6CC5
+  ActorBorderColor #F9A825
+  LifeLineBorderColor #3B6CC5
+  ParticipantBackgroundColor #EEF4FF
+  ParticipantBorderColor #3B6CC5
+  BoxBackgroundColor #F8F9FA
+}
+skinparam shadowing false
+skinparam responseMessageBelowArrow true
+
+actor       "Patient"                        as P
+participant "BeFine App\n(Flutter / BLoC)"   as APP
+participant "BLE SDK\n(BleManager)"          as SDK
+participant "ESP32-S3\n(GATT Server)"        as FW
+participant "Session FSM\n(FreeRTOS)"        as FSM
+participant "DSP Task\n(50 Hz)"              as DSP
+participant "Local DB\n(Drift / SQLite)"     as DB
+
+' ═══════════════════════════════════════════════
+== Phase 1 — Scan & Connexion BLE ==
+' ═══════════════════════════════════════════════
+
+P -> APP   : Ouvre l'appli → ScanPage
+APP -> SDK : BleScanner.scan(timeout=10s)
+SDK -> FW  : BLE Advertisement request (UUID 0xBF00)
+FW --> SDK : Advertising packet "BeFine-xxxx"
+SDK --> APP : List<BluetoothDevice> found
+P -> APP   : Sélectionne le dispositif
+
+APP -> SDK : BleManager.connect(device)
+SDK -> FW  : BLE CONNECT request
+FW --> SDK : CONNECTED
+SDK -> FW  : discoverServices()
+FW --> SDK : Service 0xBF00 + characteristics
+SDK -> FW  : setNotifyValue(true) → 0xBF01 (flow)
+SDK -> FW  : setNotifyValue(true) → 0xBF03 (environment)
+SDK --> APP: ConnectionState.connected
+APP --> P  : Affiche HomeScreen — "Appareil connecté ✓"
+
+' ═══════════════════════════════════════════════
+== Phase 2 — Démarrage de session ==
+' ═══════════════════════════════════════════════
+
+P -> APP   : Tape "Démarrer session"
+APP -> APP : DeviceBloc → StartSession(deviceId)
+APP -> SDK : BleManager.sendCommand(SessionCommand.start)
+SDK -> FW  : GATT Write 0xBF04 ← [0x01]
+FW -> FSM  : xQueueSend(SESSION_EVT_BLE_START)
+FSM --> FW : state = SHAKING
+FW --> APP : (aucune notification directe — état géré par le BLoC)
+APP --> P  : Affiche Étape 1 : "Agitez le dispositif"
+
+' ═══════════════════════════════════════════════
+== Phase 3 — Agitation (MPU6050) ==
+' ═══════════════════════════════════════════════
+
+note over FW : sensor_task lit MPU6050 à 50 Hz\nmagnitude > 1.5 g détectée
+FW -> FSM  : xQueueSend(SESSION_EVT_SHAKE_DETECTED)
+FSM --> FW : state = INSERTING
+FW -> FW   : display_update_state(INSERTING)
+' Le BLoC Flutter reflète l'état via le flux de mesure (flow ≈ 0 + flags)
+SDK --> APP: FlowMeasurement (flow=0.0, isInhaling=false)
+APP -> APP : SessionBloc → SessionShaking → SessionInserting
+APP --> P  : Affiche Étape 2 : "Insérez la cartouche"
+
+' ═══════════════════════════════════════════════
+== Phase 4 — Insertion du spray (QRE sensor) ==
+' ═══════════════════════════════════════════════
+
+note over FW : QRE1113 détecte objet → GPIO IRQ
+FW -> FSM  : xQueueSend(SESSION_EVT_SPRAY_INSERTED)
+FSM --> FW : state = INHALING
+APP --> P  : Affiche Étape 3 : "Inhaler profondément"
+
+' ═══════════════════════════════════════════════
+== Phase 5 — Inhalation en cours (50 Hz) ==
+' ═══════════════════════════════════════════════
+
+loop Chaque 20 ms (50 Hz) pendant l'inhalation
+  FW  -> DSP : sensor_data_t sur g_sensor_queue
+  DSP -> DSP : IIR filter → Bernoulli → flow_lpm
+  DSP -> FW  : flow_sample_t sur g_dsp_queue
+  FW  -> SDK : GATT Notify 0xBF01 ← [flow×100 LE][flags]
+  SDK -> SDK : FrameParser.parseFlowRate(bytes)
+  SDK --> APP: FlowMeasurement(flowLpm, isInhaling=true)
+  APP -> APP : SessionBloc: SessionInhaling(currentFlow)
+  APP --> P  : FlowChartWidget mise à jour (graphique temps réel)
+end
+
+' ═══════════════════════════════════════════════
+== Phase 6 — Fin d'inhalation → Apnée ==
+' ═══════════════════════════════════════════════
+
+note over DSP : flow_lpm tombe sous 0.1 L/min
+FW -> FSM  : xQueueSend(SESSION_EVT_FLOW_BELOW_MIN)
+FSM --> FW : state = HOLDING
+APP -> APP : SessionBloc → SessionHolding (countdown 10s)
+APP --> P  : Affiche Étape 4 : "Retenez 10 secondes ⏱"
+
+' Compte à rebours côté firmware
+loop Chaque seconde pendant 10s
+  FW -> SDK  : GATT Notify 0xBF01 (flow≈0)
+  APP --> P  : Décompte affiché
+end
+
+' ═══════════════════════════════════════════════
+== Phase 7 — Fin de l'apnée → Résultats ==
+' ═══════════════════════════════════════════════
+
+FW -> FSM  : xQueueSend(SESSION_EVT_HOLD_COMPLETE)
+FSM --> FW : state = COMPLETE
+note over FW : Calcule FEV1 (intégrale 1s), PEF (max), score A-F
+FW -> SDK  : GATT Indicate 0xBF02 ← [fev1 float32][pef float32][score uint8]
+SDK -> SDK : FrameParser.parseResult(bytes)
+SDK --> APP: SessionResult(fev1L, pefLpm, qualityScore)
+APP -> APP : SessionBloc → SessionComplete(result)
+APP -> DB  : LocalDB.saveSession(session, result)
+DB --> APP : OK
+APP --> P  : SessionSummaryPage — FEV1, PEF, Grade, mini-chart
+
+' ═══════════════════════════════════════════════
+== Phase 8 — Export optionnel ==
+' ═══════════════════════════════════════════════
+
+opt Patient choisit d'exporter
+  P -> APP  : Tape "Exporter"
+  APP --> P : ExportPage (CSV / PDF / JSON)
+  P -> APP  : Sélectionne format
+  APP -> DB : getFlowSamples(sessionId)
+  DB --> APP: List<FlowMeasurement>
+  APP -> APP: Exporter.generate(format, data)
+  APP --> P : share_plus → partage fichier
+end
+
+@enduml

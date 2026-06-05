@@ -1,0 +1,107 @@
+@startuml 04_state_machine
+title BeFine — Diagrammes d'États\n(Firmware ESP32-S3  +  Flutter SessionBloc)
+
+skinparam state {
+  BackgroundColor       #EEF4FF
+  BorderColor           #3B6CC5
+  FontSize              12
+  ArrowColor            #3B6CC5
+  StartColor            #1A237E
+  EndColor              #1A237E
+}
+skinparam shadowing false
+
+' ════════════════════════════════════════════════════════════════
+' PARTIE 1 — Firmware FSM  (session_fsm.c / FreeRTOS)
+' ════════════════════════════════════════════════════════════════
+
+state "Firmware — Session FSM (ESP32-S3)" as FW_FSM {
+
+  [*] --> FW_IDLE
+
+  state FW_IDLE       : entry / LED = off\nentry / display: screen_idle\nentry / BLE adv interval = 100 ms
+  state FW_SHAKING    : entry / LED = bleu clignotant\nentry / display: "Agiter"\ndo / lire MPU6050 @ 50 Hz
+  state FW_INSERTING  : entry / LED = bleu fixe\nentry / display: "Insérer"\ndo / surveiller QRE GPIO
+  state FW_INHALING   : entry / LED = vert\nentry / display: screen_flow\ndo / DSP 50 Hz\ndo / GATT Notify 0xBF01
+  state FW_HOLDING    : entry / LED = orange\nentry / display: countdown\ndo / GATT Notify 0xBF01 (flow≈0)\ndo / décrémenter timer 10s
+  state FW_COMPLETE   : entry / calcul FEV1 + PEF + score\nentry / GATT Indicate 0xBF02\nentry / écriture SPIFFS + SD\nentry / LED = vert fixe 3s\nentry / display: screen_summary
+  state FW_ERROR      : entry / LED = rouge\nentry / GATT Notify 0xBF06 (error_code)\nentry / display: "Erreur"
+
+  FW_IDLE      --> FW_SHAKING    : SHAKE_DETECTED\n[magnitude > 1.5 g]
+  FW_IDLE      --> FW_SHAKING    : BLE_START received\n[cmd 0x01]
+  FW_IDLE      --> FW_ERROR      : ERROR
+
+  FW_SHAKING   --> FW_INSERTING  : SPRAY_INSERTED\n[QRE GPIO = LOW]
+  FW_SHAKING   --> FW_IDLE       : BLE_STOP [cmd 0x02]
+  FW_SHAKING   --> FW_IDLE       : RESET [cmd 0x03]
+  FW_SHAKING   --> FW_ERROR      : ERROR
+
+  FW_INSERTING --> FW_INHALING   : FLOW_ABOVE_MIN\n[flow > 30 L/min]
+  FW_INSERTING --> FW_IDLE       : BLE_STOP
+  FW_INSERTING --> FW_IDLE       : RESET
+  FW_INSERTING --> FW_ERROR      : ERROR
+
+  FW_INHALING  --> FW_HOLDING    : FLOW_BELOW_MIN\n[flow < 0.1 L/min]
+  FW_INHALING  --> FW_IDLE       : BLE_STOP
+  FW_INHALING  --> FW_IDLE       : RESET
+  FW_INHALING  --> FW_ERROR      : ERROR
+
+  FW_HOLDING   --> FW_COMPLETE   : HOLD_COMPLETE\n[timer = 10s]
+  FW_HOLDING   --> FW_INHALING   : FLOW_ABOVE_MIN\n[reprise inspiration]
+  FW_HOLDING   --> FW_IDLE       : BLE_STOP
+  FW_HOLDING   --> FW_IDLE       : RESET
+
+  FW_COMPLETE  --> FW_IDLE       : RESET [cmd 0x03]
+  FW_COMPLETE  --> [*]
+
+  FW_ERROR     --> FW_IDLE       : RESET
+}
+
+' ════════════════════════════════════════════════════════════════
+' PARTIE 2 — Flutter SessionBloc FSM  (session_bloc.dart)
+' ════════════════════════════════════════════════════════════════
+
+state "Flutter — SessionBloc FSM (Dart / BLoC)" as FL_FSM {
+
+  [*] --> FL_IDLE
+
+  state FL_IDLE       : Affiche bouton "Démarrer"
+  state FL_SHAKING    : Animation secousse\nAttend flow > 0.5 L/min
+  state FL_INSERTING  : Animation insertion\nAttend isInhaling = true
+  state FL_INHALING   : FlowChartWidget actif (50 Hz)\nGraphique temps réel
+  state FL_HOLDING    : StepIndicator = étape 4\nCountdown 10s affiché
+  state FL_COMPLETE   : SessionSummaryPage\nFEV1 / PEF / Score
+  state FL_ERROR      : SnackBar erreur\nBouton "Réessayer"
+
+  FL_IDLE      --> FL_SHAKING    : SessionStartRequested\n[connect OK + BLE cmd envoyé]
+  FL_IDLE      --> FL_ERROR      : SessionStartRequested\n[BLE failure]
+
+  FL_SHAKING   --> FL_INSERTING  : FlowMeasurementReceived\n[flow > 0.5 L/min]
+
+  FL_INSERTING --> FL_INHALING   : FlowMeasurementReceived\n[isInhaling == true]
+
+  FL_INHALING  --> FL_INHALING   : FlowMeasurementReceived\n[mise à jour graphique]
+  FL_INHALING  --> FL_HOLDING    : FlowMeasurementReceived\n[flow < 0.1 L/min]
+
+  FL_HOLDING   --> FL_HOLDING    : FlowMeasurementReceived\n[flow ≈ 0, décompte]
+  FL_HOLDING   --> FL_INHALING   : FlowMeasurementReceived\n[flow > 0.5 L/min, reprise]
+  FL_HOLDING   --> FL_COMPLETE   : SessionResultReceived\n[GATT Indicate 0xBF02]
+
+  FL_COMPLETE  --> FL_IDLE       : SessionReset
+
+  FL_ERROR     --> FL_IDLE       : SessionReset
+}
+
+note bottom of FW_FSM
+  Les transitions firmware sont déclenchées par des
+  événements FreeRTOS (xQueueSend) depuis les tâches
+  sensor_task, ble_notify_task et le handler GATT write.
+end note
+
+note bottom of FL_FSM
+  Le BLoC Flutter est un miroir logiciel de la FSM firmware.
+  Il consomme le Stream<FlowMeasurement> du BLE SDK pour
+  progresser automatiquement à travers les états.
+end note
+
+@enduml

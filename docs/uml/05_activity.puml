@@ -1,0 +1,203 @@
+@startuml 05_activity
+title BeFine — Diagramme d'Activité\nFlux complet d'une session guidée (vue Patient + Système)
+
+skinparam activity {
+  BackgroundColor       #EEF4FF
+  BorderColor           #3B6CC5
+  DiamondBackgroundColor #FFF9C4
+  DiamondBorderColor    #F9A825
+  StartColor            #1A237E
+  EndColor              #1A237E
+  ArrowColor            #3B6CC5
+  FontSize              12
+}
+skinparam shadowing false
+skinparam swimlane {
+  BorderColor #3B6CC5
+  TitleBackgroundColor #3B6CC5
+  TitleFontColor white
+}
+
+|#EEF4FF| Patient |
+|#E8F5E9| Application Flutter |
+|#FFF8E1| BLE SDK |
+|#FCE4EC| Firmware ESP32-S3 |
+
+' ════════════════════════════════════════════════════════════
+start
+' ════════════════════════════════════════════════════════════
+
+|Patient|
+:Allume le dispositif BeFine;
+
+|Firmware ESP32-S3|
+:Boot ESP-IDF\nInit I2C, BLE, SPIFFS, SD;
+:Démarre les tâches FreeRTOS\n(sensor / dsp / fsm / ble / display / storage / pm);
+:state = IDLE\nDémarre BLE advertising (UUID 0xBF00);
+
+|Patient|
+:Ouvre l'application BeFine;
+
+|Application Flutter|
+:Initialise DI (get_it)\nConfigure GoRouter;
+
+' ════════════════════════════════════════════════════════════
+|Application Flutter|
+:ScanPage — Lance BleScanner.scan();
+
+|BLE SDK|
+:Scan BLE (filtre UUID 0xBF00, timeout 10s);
+
+if (Dispositif trouvé ?) then (oui)
+  |Application Flutter|
+  :Affiche liste appareils trouvés;
+  |Patient|
+  :Sélectionne "BeFine-xxxx";
+  |BLE SDK|
+  :BleManager.connect(device);
+  :discoverServices()\nsetNotify(0xBF01, 0xBF03);
+  |Application Flutter|
+  :DeviceBloc → DeviceConnected;
+  :Affiche HomeScreen ✓;
+else (non)
+  |Application Flutter|
+  :Affiche erreur "Aucun dispositif BeFine trouvé"\nBouton "Réessayer";
+  stop
+endif
+
+' ════════════════════════════════════════════════════════════
+|Patient|
+:Appuie sur "Démarrer session";
+
+|Application Flutter|
+:SessionBloc → SessionStartRequested;
+:StartSession(deviceId) use case;
+
+|BLE SDK|
+:sendCommand(SessionCommand.start)\nGATT Write 0xBF04 ← 0x01;
+
+|Firmware ESP32-S3|
+:handle_session_ctrl_write → SESSION_EVT_BLE_START;
+:FSM: IDLE → SHAKING;
+:Affiche écran "Agiter";
+
+' ════════════════════════════════════════════════════════════
+|Application Flutter|
+:SessionBloc → SessionShaking\nAffiche Étape 1 : "Agitez le dispositif";
+
+|Patient|
+:Agite le dispositif;
+
+|Firmware ESP32-S3|
+:mpu6050_is_shaking() → magnitude > 1.5g;
+:FSM: SHAKING → INSERTING;
+
+|BLE SDK|
+:Reçoit FlowMeasurement (flow≈0);
+
+|Application Flutter|
+:SessionBloc → SessionInserting\nAffiche Étape 2 : "Insérez la cartouche";
+
+' ════════════════════════════════════════════════════════════
+|Patient|
+:Insère la cartouche dans le dispositif;
+
+|Firmware ESP32-S3|
+:QRE1113 GPIO → LOW (objet détecté);
+:FSM: INSERTING → INHALING;
+
+|Application Flutter|
+:SessionBloc → SessionInhaling\nAffiche Étape 3 : "Inhaler profondément"\nFlowChartWidget actif;
+
+' ════════════════════════════════════════════════════════════
+|Patient|
+:Inhale profondément et régulièrement;
+
+fork
+  |Firmware ESP32-S3|
+  repeat
+    :sensor_task: SDP31 → raw DP;
+    :dsp_task: IIR → Bernoulli → flow_lpm;
+    :ble_notify_task: Notify 0xBF01 (50 Hz);
+  repeat while (flow > 0.1 L/min ?) is (oui)
+  ->non (fin inhalation);
+
+  |BLE SDK|
+  repeat
+    :parseFlowRate(bytes);
+    :émet FlowMeasurement sur flowStream;
+  repeat while (fin ?) is (non)
+
+  |Application Flutter|
+  repeat
+    :FlowChartWidget mise à jour;
+    :SessionBloc → SessionInhaling(currentFlow);
+  repeat while (fin ?) is (non)
+end fork
+
+' ════════════════════════════════════════════════════════════
+|Firmware ESP32-S3|
+:FSM: INHALING → HOLDING\n(flow < 0.1 L/min);
+:Démarre timer 10s;
+
+|Application Flutter|
+:SessionBloc → SessionHolding\nAffiche Étape 4 : "Retenez 10 secondes ⏱";
+
+|Patient|
+:Retient sa respiration;
+
+fork
+  |Firmware ESP32-S3|
+  :Décompte 10 secondes;
+  :Affiche countdown OLED;
+
+  |Application Flutter|
+  :Décompte affiché dans l'UI;
+end fork
+
+if (Patient a retenu 10s ?) then (oui)
+  |Firmware ESP32-S3|
+  :FSM: HOLDING → COMPLETE;
+  :flow_integrate_fev1() → FEV1, PEF;
+  :Calcule score (A/B/C/F);
+  :GATT Indicate 0xBF02 ← [fev1][pef][score];
+  :session_record_save_metadata() → SPIFFS;
+  :sd_storage_write_session() → CSV;
+else (patient a repris l'inspiration)
+  |Firmware ESP32-S3|
+  :FSM: HOLDING → INHALING;
+  note right: Retour à la boucle d'inhalation
+endif
+
+' ════════════════════════════════════════════════════════════
+|BLE SDK|
+:parseResult(bytes) → SessionResult;
+:émet sur connectionStream;
+
+|Application Flutter|
+:SessionBloc → SessionComplete(result);
+:DB.saveSession(session, result);
+:Navigue vers SessionSummaryPage;
+
+|Patient|
+:Consulte : FEV1, PEF, Score (A/B/C/F)\nGradu de technique;
+
+' ════════════════════════════════════════════════════════════
+if (Exporter les données ?) then (oui)
+  |Patient|
+  :Choisit le format (CSV / PDF / JSON);
+  |Application Flutter|
+  :DB.getFlowSamples(sessionId);
+  :Exporter.generate(format, data);
+  :share_plus → partager fichier;
+else (non)
+  |Patient|
+  :Retourne à l'écran d'accueil;
+endif
+
+|Application Flutter|
+:SessionBloc → SessionReset → SessionIdle;
+
+stop
+
+@enduml

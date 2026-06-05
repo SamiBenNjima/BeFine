@@ -1,0 +1,89 @@
+@startuml 01_use_case
+title BeFine — Diagramme de Cas d'Utilisation
+
+skinparam actorStyle awesome
+skinparam usecase {
+  BackgroundColor #EEF4FF
+  BorderColor     #3B6CC5
+  FontSize        13
+}
+skinparam actor {
+  BackgroundColor #FFFDE7
+  BorderColor     #F9A825
+}
+skinparam packageStyle rectangle
+skinparam shadowing false
+left to right direction
+
+' ── Acteurs ────────────────────────────────────────────────────
+actor "Patient"                    as Patient
+actor "Clinicien\n(lecture seule)" as Clinician
+actor "Technicien\n(calibration)"  as Technician
+
+' ── Système ────────────────────────────────────────────────────
+rectangle "BeFine System" {
+
+  ' --- Groupe Appareil ---
+  package "Appareil (ESP32-S3)" {
+    usecase "UC01\nAllumer le dispositif"         as UC01
+    usecase "UC02\nVérifier niveau batterie"      as UC02
+    usecase "UC08\nÉtalonner le capteur de flux"  as UC08
+    usecase "UC09\nMettre à jour le firmware OTA" as UC09
+  }
+
+  ' --- Groupe Connexion ---
+  package "Connexion BLE" {
+    usecase "UC03\nScanner les appareils BLE"     as UC03
+    usecase "UC04\nCoupler au dispositif BeFine"  as UC04
+  }
+
+  ' --- Groupe Session ---
+  package "Session Inhalateur" {
+    usecase "UC05\nLancer une session guidée"           as UC05
+    usecase "UC06\nVisualiser le flux en temps réel"    as UC06
+    usecase "UC07\nRecevoir le score FEV1 / PEF"        as UC07
+    usecase "UC10\nArrêter / Réinitialiser la session"  as UC10
+  }
+
+  ' --- Groupe Données ---
+  package "Gestion des Données" {
+    usecase "UC11\nConsulter l'historique des sessions" as UC11
+    usecase "UC12\nVisualiser les tendances (FEV1/PEF)" as UC12
+    usecase "UC13\nExporter les données (CSV/PDF/JSON)" as UC13
+  }
+
+  ' --- Groupe Profil ---
+  package "Configuration" {
+    usecase "UC14\nConfigurer le profil patient"        as UC14
+    usecase "UC15\nActiver les rappels de prise"        as UC15
+  }
+}
+
+' ── Relations include / extend ──────────────────────────────────
+UC05 ..> UC06 : <<include>>
+UC05 ..> UC07 : <<include>>
+UC07 ..> UC11 : <<extend>>
+UC11 ..> UC12 : <<extend>>
+UC04 ..> UC03 : <<include>>
+UC02 ..> UC01 : <<include>>
+
+' ── Associations Acteurs ────────────────────────────────────────
+Patient     --> UC01
+Patient     --> UC03
+Patient     --> UC04
+Patient     --> UC05
+Patient     --> UC10
+Patient     --> UC11
+Patient     --> UC13
+Patient     --> UC14
+Patient     --> UC15
+
+Clinician   --> UC11
+Clinician   --> UC12
+Clinician   --> UC13
+
+Technician  --> UC08
+Technician  --> UC09
+Technician  --> UC02
+
+@enduml

@@ -1,0 +1,275 @@
+@startuml 02_class_diagram
+title BeFine — Diagramme de Classes
+
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor #EEF4FF
+  BorderColor     #3B6CC5
+  HeaderBackgroundColor #3B6CC5
+  HeaderFontColor white
+  FontSize 12
+}
+skinparam package {
+  BackgroundColor #F8F9FA
+  BorderColor #AAAAAA
+}
+skinparam shadowing false
+hide empty members
+
+' ════════════════════════════════════════════════════════════════
+' SHARED DOMAIN (Contrat GATT — utilisé par firmware ET Flutter)
+' ════════════════════════════════════════════════════════════════
+package "Shared Domain" #FFFDE7 {
+
+  class FlowMeasurement <<immutable>> {
+    + flowLpm     : float
+    + isInhaling  : bool
+    + isExhaling  : bool
+    + timestamp   : DateTime
+    --
+    + copyWith(...) : FlowMeasurement
+  }
+
+  class EnvironmentData <<immutable>> {
+    + temperatureC : float
+    + humidityPct  : float
+    + timestamp    : DateTime
+    --
+    + copyWith(...) : EnvironmentData
+  }
+
+  class SessionResult <<immutable>> {
+    + sessionId      : int
+    + fev1L          : float
+    + pefLpm         : float
+    + qualityScore   : ScoreGrade
+    + durationMs     : int
+    + timestampUnix  : int
+    --
+    + copyWith(...) : SessionResult
+  }
+
+  enum ScoreGrade {
+    A
+    B
+    C
+    F
+  }
+
+  class DeviceInfo <<immutable>> {
+    + fwMajor    : int
+    + fwMinor    : int
+    + hwRev      : int
+    + batteryPct : int
+  }
+
+  SessionResult --> ScoreGrade
+}
+
+' ════════════════════════════════════════════════════════════════
+' BLE SDK  (package befine_ble_sdk — pub.dev)
+' ════════════════════════════════════════════════════════════════
+package "befine_ble_sdk" #E8F5E9 {
+
+  abstract class FrameParser <<static utility>> {
+    + {static} parseFlowRate(bytes : List<int>)   : FlowMeasurement
+    + {static} parseEnvironment(bytes : List<int>) : EnvironmentData
+    + {static} parseResult(bytes : List<int>)      : SessionResult
+    + {static} encodeCommand(cmd : SessionCommand) : List<int>
+  }
+
+  class ReconnectPolicy {
+    + maxAttempts   : int
+    + initialDelay  : Duration
+    + maxDelay      : Duration
+    + backoffFactor : double
+    + jitterFraction: double
+    --
+    + delayFor(attempt : int) : Duration
+  }
+
+  class BleScanner {
+    + scan(timeout : Duration) : Future<List<BluetoothDevice>>
+    - _filterByServiceUuid(devices) : List<BluetoothDevice>
+  }
+
+  class BleManager {
+    - _policy       : ReconnectPolicy
+    - _device       : BluetoothDevice?
+    - _reconnectAttempt : int
+    - _flowCtrl     : StreamController<FlowMeasurement>
+    - _envCtrl      : StreamController<EnvironmentData>
+    - _connCtrl     : StreamController<ConnectionState>
+    --
+    + flowStream        : Stream<FlowMeasurement>
+    + environmentStream : Stream<EnvironmentData>
+    + connectionStream  : Stream<ConnectionState>
+    --
+    + connect(device) : Future<void>
+    + sendCommand(cmd : SessionCommand) : Future<void>
+    + dispose() : Future<void>
+    - _connectInternal() : Future<void>
+    - _scheduleReconnect() : void
+    - _subscribeCharacteristics() : Future<void>
+  }
+
+  enum SessionCommand {
+    start   ' 0x01
+    stop    ' 0x02
+    reset   ' 0x03
+    calibrate ' 0xF0
+  }
+
+  class BefineGattProfile <<constants>> {
+    + {static} spirometryServiceUuid : Uuid
+    + {static} flowRateUuid          : Uuid   ' 0xBF01
+    + {static} resultUuid            : Uuid   ' 0xBF02
+    + {static} environmentUuid       : Uuid   ' 0xBF03
+    + {static} sessionCtrlUuid       : Uuid   ' 0xBF04
+    + {static} deviceInfoUuid        : Uuid   ' 0xBF05
+    + {static} errorStatusUuid       : Uuid   ' 0xBF06
+  }
+
+  class ParseException {
+    + characteristic : String
+    + expected : int
+    + actual   : int
+    --
+    + ParseException.malformedFrame(...)
+  }
+
+  class BleException {
+    + message : String
+    + code    : BleErrorCode
+    --
+    + BleException.connectionFailed()
+    + BleException.timeout()
+    + BleException.notSupported()
+  }
+
+  BleManager --> ReconnectPolicy
+  BleManager --> BefineGattProfile : uses
+  BleManager ..> FrameParser       : uses
+  BleManager --> FlowMeasurement   : emits
+  BleManager --> EnvironmentData   : emits
+  BleManager --> SessionCommand    : sends
+  FrameParser ..> ParseException   : throws
+}
+
+' ════════════════════════════════════════════════════════════════
+' APP — DOMAIN LAYER
+' ════════════════════════════════════════════════════════════════
+package "befine_app :: Domain" #E3F2FD {
+
+  class Session <<entity>> {
+    + id       : SessionId
+    + deviceId : DeviceId
+    + startedAt: DateTime
+  }
+
+  class Device <<entity>> {
+    + id   : DeviceId
+    + name : String
+    + rssi : int
+  }
+
+  interface SessionRepository <<abstract>> {
+    + startSession(deviceId)  : Future<Either<Failure, Session>>
+    + endSession(id)          : Future<Either<Failure, SessionResult>>
+    + flowMeasurements(id)    : Stream<Either<Failure, FlowMeasurement>>
+    + getHistory(range?)      : Future<Either<Failure, List<Session>>>
+  }
+
+  interface DeviceRepository <<abstract>> {
+    + scan()           : Future<Either<Failure, List<Device>>>
+    + connect(id)      : Future<Either<Failure, Device>>
+    + disconnect(id)   : Future<Either<Failure, void>>
+  }
+
+  class StartSession <<usecase>> {
+    - _repo : SessionRepository
+    + call(deviceId) : Future<Either<Failure, Session>>
+  }
+  class EndSession <<usecase>> {
+    - _repo : SessionRepository
+    + call(id) : Future<Either<Failure, SessionResult>>
+  }
+  class GetSessionHistory <<usecase>> {
+    - _repo : SessionRepository
+    + call(range?) : Future<Either<Failure, List<Session>>>
+  }
+  class ScanDevices <<usecase>> {
+    - _repo : DeviceRepository
+    + call() : Future<Either<Failure, List<Device>>>
+  }
+  class ConnectDevice <<usecase>> {
+    - _repo : DeviceRepository
+    + call(id) : Future<Either<Failure, Device>>
+  }
+
+  abstract class Failure <<sealed>> {}
+  class BleFailure     extends Failure { + message : String }
+  class StorageFailure extends Failure { + message : String }
+  class ParseFailure   extends Failure { + message : String }
+
+  StartSession       --> SessionRepository
+  EndSession         --> SessionRepository
+  GetSessionHistory  --> SessionRepository
+  ScanDevices        --> DeviceRepository
+  ConnectDevice      --> DeviceRepository
+}
+
+' ════════════════════════════════════════════════════════════════
+' APP — PRESENTATION LAYER (BLoC)
+' ════════════════════════════════════════════════════════════════
+package "befine_app :: Presentation" #FCE4EC {
+
+  class SessionBloc {
+    - _startSession : StartSession
+    - _endSession   : EndSession
+    - _flowSub      : StreamSubscription?
+    --
+    + on<SessionStartRequested>()
+    + on<FlowMeasurementReceived>()
+    + on<SessionStopRequested>()
+  }
+
+  abstract class SessionState <<sealed>> {}
+  class SessionIdle      extends SessionState {}
+  class SessionShaking   extends SessionState {}
+  class SessionInserting extends SessionState {}
+  class SessionInhaling  extends SessionState {
+    + currentFlow : FlowMeasurement
+  }
+  class SessionHolding   extends SessionState {
+    + remainingSec : int
+  }
+  class SessionComplete  extends SessionState {
+    + result : SessionResult
+  }
+  class SessionError     extends SessionState {
+    + failure : Failure
+  }
+
+  class DeviceBloc {
+    - _scanDevices   : ScanDevices
+    - _connectDevice : ConnectDevice
+  }
+
+  abstract class DeviceState <<sealed>> {}
+  class DeviceIdle        extends DeviceState {}
+  class DeviceScanning    extends DeviceState {}
+  class DeviceFound       extends DeviceState { + devices : List<Device> }
+  class DeviceConnecting  extends DeviceState {}
+  class DeviceConnected   extends DeviceState { + device : Device }
+  class DeviceError       extends DeviceState { + failure : Failure }
+
+  SessionBloc --> SessionState
+  SessionBloc --> StartSession
+  SessionBloc --> EndSession
+  DeviceBloc  --> DeviceState
+  DeviceBloc  --> ScanDevices
+  DeviceBloc  --> ConnectDevice
+}
+
+@enduml
