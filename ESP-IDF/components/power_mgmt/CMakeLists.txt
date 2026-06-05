@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "power_mgmt.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        session
+        display
+        bluetooth
+        esp_log
+        esp_pm
+        freertos
+        esp_sleep
+)
