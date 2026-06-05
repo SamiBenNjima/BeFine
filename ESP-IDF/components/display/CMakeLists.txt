@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "ssd1306.c"
+        "display.c"
+        "screens/screen_idle.c"
+        "screens/screen_guided.c"
+        "screens/screen_flow.c"
+        "screens/screen_summary.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        session
+        dsp
+        driver
+        esp_log
+        freertos
+)
