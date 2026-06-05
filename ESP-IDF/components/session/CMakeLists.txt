@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "session_fsm.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        dsp
+        esp_log
+        freertos
+        esp_timer
+)
