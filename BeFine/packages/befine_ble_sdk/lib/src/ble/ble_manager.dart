@@ -22,9 +22,9 @@ class BleManager {
   int _reconnectAttempt = 0;
   Timer? _reconnectTimer;
   StreamSubscription<BluetoothConnectionState>? _connStateSub;
-  StreamSubscription<List<int>>? _flowSub;
-  StreamSubscription<List<int>>? _envSub;
-  StreamSubscription<List<int>>? _resultSub;
+  StreamSubscription<FlowMeasurement>? _flowSub;
+  StreamSubscription<EnvironmentData>? _envSub;
+  StreamSubscription<SessionResult>? _resultSub;
 
   BluetoothCharacteristic? _sessionCtrlChar;
 
@@ -138,7 +138,10 @@ class BleManager {
     _envSub?.cancel();
     _resultSub?.cancel();
     _connStateSub?.cancel();
-    _flowSub = _envSub = _resultSub = _connStateSub = null;
+    _flowSub = null;
+    _envSub = null;
+    _resultSub = null;
+    _connStateSub = null;
     _sessionCtrlChar = null;
   }
 
