@@ -1,0 +1,20 @@
+name: befine_ble_sdk
+description: Open-source BLE abstraction layer for BeFine smart inhaler devices. GATT frame parsing, auto-reconnect, and reactive Dart streams.
+version: 1.0.0
+homepage: https://github.com/SamiBenNjima/befine
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: ^1.31.0
+  dartz: ^0.10.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  mocktail: ^1.0.4
